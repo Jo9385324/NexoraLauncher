@@ -1,5 +1,5 @@
 ﻿# Launcher_Quantum
-# QuantumLauncher
+
 
 Следующее поколение лаунчера для Minecraft на Python.
 
