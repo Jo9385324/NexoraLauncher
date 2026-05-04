@@ -48,6 +48,16 @@ def get_libraries_dir() -> Path:
     return get_data_dir() / "libraries"
 
 
+def get_modpacks_dir() -> Path:
+    """Директория для скачанных модпаков."""
+    return get_data_dir() / "modpacks"
+
+
+def get_downloads_dir() -> Path:
+    """Директория для скачанных файлов."""
+    return get_data_dir() / "downloads"
+
+
 def ensure_directories() -> None:
     """Создаёт все необходимые директории."""
     dirs = [
@@ -59,6 +69,8 @@ def ensure_directories() -> None:
         get_versions_dir(),
         get_assets_dir(),
         get_libraries_dir(),
+        get_modpacks_dir(),
+        get_downloads_dir(),
     ]
     for directory in dirs:
         directory.mkdir(parents=True, exist_ok=True)

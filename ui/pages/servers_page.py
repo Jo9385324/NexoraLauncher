@@ -4,12 +4,15 @@
 """
 
 import asyncio
+import threading
 from tkinter import messagebox
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw
 
 from quantumlauncher.core.server_manager import ServerInfo, ServerManager
+from quantumlauncher.core.server_ping import ServerStatus
+from quantumlauncher.utils.i18n import t
 
 
 def create_server_placeholder(color: str = "#3a7ebf") -> Image.Image:
@@ -37,6 +40,8 @@ class ServersPage(ctk.CTkFrame):
         self.controller = controller
         self.server_manager = ServerManager()
         self._server_images: dict[str, Image.Image] = {}
+        # Храним ссылки на виджеты для обновления пинга/MOTD
+        self._server_widgets: dict[str, dict] = {}
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -55,14 +60,14 @@ class ServersPage(ctk.CTkFrame):
 
         title = ctk.CTkLabel(
             title_frame,
-            text="Серверы",
+            text=t("servers.title"),
             font=ctk.CTkFont(size=32, weight="bold")
         )
         title.pack(side="left")
 
         subtitle = ctk.CTkLabel(
             title_frame,
-            text="Управляйте своими серверами и подключайтесь к друзьям",
+            text=t("servers.subtitle"),
             font=ctk.CTkFont(size=13),
             text_color="gray"
         )
@@ -71,7 +76,7 @@ class ServersPage(ctk.CTkFrame):
         # Кнопка добавления с иконкой
         add_btn = ctk.CTkButton(
             header_frame,
-            text="+ Добавить сервер",
+            text=t("servers.add"),
             command=self._add_server_dialog,
             width=160,
             height=40,
@@ -101,7 +106,7 @@ class ServersPage(ctk.CTkFrame):
 
         refresh_btn = ctk.CTkButton(
             stats_inner,
-            text="🔄 Обновить",
+            text=t("servers.refresh"),
             command=self._refresh_all_servers,
             width=100,
             height=30,
@@ -109,7 +114,7 @@ class ServersPage(ctk.CTkFrame):
             corner_radius=8,
             fg_color="transparent",
             text_color=("gray70", "gray85"),
-            hover_color=("rgba(100, 100, 120, 0.3)", "rgba(120, 120, 140, 0.3)")
+            hover_color=("#3a3a45", "#404050")
         )
         refresh_btn.pack(side="right")
 
@@ -124,6 +129,7 @@ class ServersPage(ctk.CTkFrame):
             widget.destroy()
 
         self._server_images.clear()
+        self._server_widgets.clear()
 
         servers = self.server_manager.get_all_servers()
 
@@ -136,7 +142,7 @@ class ServersPage(ctk.CTkFrame):
 
             empty_label = ctk.CTkLabel(
                 empty_frame,
-                text="📭 Список серверов пуст",
+                text=t("servers.empty"),
                 font=ctk.CTkFont(size=18, weight="bold"),
                 text_color="gray"
             )
@@ -144,7 +150,7 @@ class ServersPage(ctk.CTkFrame):
 
             empty_subtitle = ctk.CTkLabel(
                 empty_frame,
-                text='Нажмите "+ Добавить сервер", чтобы добавить свой первый сервер',
+                text=t("servers.empty_hint"),
                 font=ctk.CTkFont(size=13),
                 text_color="gray"
             )
@@ -155,7 +161,7 @@ class ServersPage(ctk.CTkFrame):
         for server in servers:
             self._create_server_card(server)
 
-        # Обновляем информацию о серверах (асинхронно)
+        # Обновляем информацию о серверах (асинхронно в отдельном потоке)
         self._refresh_all_servers()
 
     def _create_server_card(self, server: ServerInfo) -> None:
@@ -197,13 +203,21 @@ class ServersPage(ctk.CTkFrame):
         status_frame = ctk.CTkFrame(top_row, fg_color="transparent")
         status_frame.pack(side="right")
 
-        self.ping_label = ctk.CTkLabel(
+        ping_label = ctk.CTkLabel(
             status_frame,
             text="--- мс",
             font=ctk.CTkFont(size=12),
             text_color="gray"
         )
-        self.ping_label.pack(side="left", padx=5)
+        ping_label.pack(side="left", padx=5)
+
+        players_label = ctk.CTkLabel(
+            status_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color="gray60"
+        )
+        players_label.pack(side="left", padx=5)
 
         # IP адрес
         ip_label = ctk.CTkLabel(
@@ -214,19 +228,16 @@ class ServersPage(ctk.CTkFrame):
         )
         ip_label.pack(anchor="w")
 
-        # MOTD (если есть)
-        if server.description:
-            desc = server.description
-            motd_text = desc[:60] + "..." if len(desc) > 60 else desc
-            motd_label = ctk.CTkLabel(
-                left_frame,
-                text=motd_text,
-                font=ctk.CTkFont(size=12),
-                text_color=("gray60", "gray70"),
-                wraplength=400,
-                justify="left"
-            )
-            motd_label.pack(anchor="w", pady=(4, 0))
+        # MOTD
+        motd_label = ctk.CTkLabel(
+            left_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray60", "gray70"),
+            wraplength=400,
+            justify="left"
+        )
+        motd_label.pack(anchor="w", pady=(4, 0))
 
         # Правая часть: кнопки действий
         right_frame = ctk.CTkFrame(card, fg_color="transparent")
@@ -234,7 +245,7 @@ class ServersPage(ctk.CTkFrame):
 
         join_btn = ctk.CTkButton(
             right_frame,
-            text="▶ Подключиться",
+            text=t("servers.join"),
             command=lambda s=server: self._connect_to_server(s),
             width=140,
             height=36,
@@ -245,7 +256,7 @@ class ServersPage(ctk.CTkFrame):
 
         delete_btn = ctk.CTkButton(
             right_frame,
-            text="🗑️",
+            text=t("servers.delete"),
             command=lambda s=server: self._delete_server(s),
             width=45,
             height=36,
@@ -257,17 +268,60 @@ class ServersPage(ctk.CTkFrame):
         )
         delete_btn.pack(side="left")
 
-    def _refresh_all_servers(self) -> None:
-        """Обновление информации о всех серверах (пинг, MOTD)."""
-        async def refresh():
-            for server in self.server_manager.get_all_servers():
-                info = await self.server_manager.refresh_server_info(server)
-                # Здесь можно обновить UI с MOTD и пингом
-                # Пока просто логируем
-                if info["ping"]:
-                    print(f"Сервер {server.name}: пинг {info['ping']} мс")
+        # Сохраняем ссылки на обновляемые виджеты
+        self._server_widgets[server.name] = {
+            "ping": ping_label,
+            "motd": motd_label,
+            "players": players_label,
+        }
 
-        asyncio.create_task(refresh())
+    def _refresh_all_servers(self) -> None:
+        """Обновление информации о всех серверах (пинг, MOTD) в фоне."""
+        def refresh() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                for server in self.server_manager.get_all_servers():
+                    try:
+                        status = loop.run_until_complete(
+                            self.server_manager.refresh_server_info(server)
+                        )
+                        self.after(
+                            0,
+                            lambda s=server.name, st=status: self._update_server_ui(s, st),
+                        )
+                    except Exception:
+                        pass
+            finally:
+                loop.close()
+
+        threading.Thread(target=refresh, daemon=True).start()
+
+    def _update_server_ui(self, server_name: str, status: ServerStatus) -> None:
+        """Обновляет UI карточки сервера данными пинга."""
+        widgets = self._server_widgets.get(server_name)
+        if not widgets:
+            return
+
+        if status.online:
+            ping_color = (
+                "#1bd96a"
+                if status.ping_ms < 100
+                else "#f1c40f" if status.ping_ms < 200 else "#e74c3c"
+            )
+            widgets["ping"].configure(
+                text=f"{status.ping_ms:.0f} мс",
+                text_color=ping_color,
+            )
+            widgets["motd"].configure(text=status.motd or "")
+            if status.players_max > 0:
+                widgets["players"].configure(
+                    text=f"{status.players_online}/{status.players_max}",
+                    text_color="gray70"
+                )
+        else:
+            widgets["ping"].configure(text="offline", text_color="#e74c3c")
+            widgets["motd"].configure(text=status.error or "Нет ответа")
 
     def _add_server_dialog(self) -> None:
         """Открытие диалога добавления сервера."""
@@ -283,7 +337,7 @@ class ServersPage(ctk.CTkFrame):
 
         title = ctk.CTkLabel(
             header_frame,
-            text="Новый сервер",
+            text=t("servers.new_title"),
             font=ctk.CTkFont(size=22, weight="bold")
         )
         title.pack(side="left")
@@ -294,14 +348,14 @@ class ServersPage(ctk.CTkFrame):
 
         name_label = ctk.CTkLabel(
             name_frame,
-            text="Название сервера:",
+            text=t("servers.name_label"),
             font=ctk.CTkFont(size=13, weight="bold")
         )
         name_label.pack(anchor="w")
 
         name_entry = ctk.CTkEntry(
             name_frame,
-            placeholder_text="Например: Hypixel",
+            placeholder_text="Hypixel",
             font=ctk.CTkFont(size=13),
             height=36,
             corner_radius=8
@@ -314,7 +368,7 @@ class ServersPage(ctk.CTkFrame):
 
         ip_label = ctk.CTkLabel(
             ip_frame,
-            text="IP адрес:",
+            text=t("servers.ip_label"),
             font=ctk.CTkFont(size=13, weight="bold")
         )
         ip_label.pack(anchor="w")
@@ -333,7 +387,7 @@ class ServersPage(ctk.CTkFrame):
 
         port_label = ctk.CTkLabel(
             port_frame,
-            text="Порт (опционально):",
+            text=t("servers.port_label"),
             font=ctk.CTkFont(size=13, weight="bold")
         )
         port_label.pack(anchor="w")
@@ -353,7 +407,7 @@ class ServersPage(ctk.CTkFrame):
 
         port_hint = ctk.CTkLabel(
             port_frame_inner,
-            text="По умолчанию: 25565",
+            text=t("servers.port_hint"),
             font=ctk.CTkFont(size=12),
             text_color="gray"
         )
@@ -365,7 +419,7 @@ class ServersPage(ctk.CTkFrame):
 
         cancel_btn = ctk.CTkButton(
             btn_frame,
-            text="Отмена",
+            text=t("servers.cancel"),
             command=dialog.destroy,
             width=120,
             height=40,
@@ -379,7 +433,7 @@ class ServersPage(ctk.CTkFrame):
 
         save_btn = ctk.CTkButton(
             btn_frame,
-            text="💾 Добавить сервер",
+            text=t("servers.save"),
             command=lambda: self._save_server_dialog(
                 name_entry.get().strip(),
                 ip_entry.get().strip(),
@@ -413,16 +467,15 @@ class ServersPage(ctk.CTkFrame):
         """Подключение к серверу."""
         # TODO: Реализовать запуск Minecraft с подключением к серверу
         messagebox.showinfo(
-            "Подключение",
-            f"Подключение к серверу {server.name}\nIP: {server.host}:{server.port}\n\n"
-            "Функция запуска с авто-подключением будет реализована позже."
+            t("servers.join").replace("▶ ", ""),
+            t("servers.connect_msg", name=server.name, host=server.host, port=server.port)
         )
 
     def _delete_server(self, server: ServerInfo) -> None:
         """Удаление сервера."""
         if messagebox.askyesno(
-            "Подтверждение",
-            f"Вы уверены, что хотите удалить сервер \"{server.name}\"?"
+            t("servers.cancel"),
+            t("servers.confirm_delete", name=server.name)
         ):
             self.server_manager.remove_server(server)
             self._load_servers()

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import minecraft_launcher_lib as mll
 from loguru import logger
 
+from quantumlauncher.utils.crypto import TokenVault
 from quantumlauncher.utils.paths import get_config_dir
 
 
@@ -115,21 +116,16 @@ class AuthManager:
         return profile
 
     def _save_profile(self, profile: UserProfile) -> None:
-        """Сохраняет профиль в файл."""
+        """Сохраняет профиль в файл (зашифрованный)."""
         path = get_config_dir() / "ms_profile.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "username": profile.username,
-                    "uuid": profile.uuid,
-                    "auth_type": profile.auth_type,
-                    "refresh_token": profile.refresh_token,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        payload = {
+            "username": profile.username,
+            "uuid": profile.uuid,
+            "auth_type": profile.auth_type,
+            "refresh_token": TokenVault.encrypt(profile.refresh_token),
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     @classmethod
     def load_saved_profile(cls) -> UserProfile | None:
@@ -144,7 +140,7 @@ class AuthManager:
                 uuid=data["uuid"],
                 access_token="",
                 auth_type=data.get("auth_type", "microsoft"),
-                refresh_token=data.get("refresh_token", ""),
+                refresh_token=TokenVault.decrypt(data.get("refresh_token", "")),
             )
         except (json.JSONDecodeError, KeyError):
             return None

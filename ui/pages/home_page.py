@@ -1,5 +1,8 @@
 """Главная страница с запуском."""
 
+import threading
+from typing import Any
+
 import customtkinter as ctk
 from loguru import logger
 from PIL import ImageTk
@@ -20,6 +23,8 @@ class HomePage(ctk.CTkFrame):
         self.auth_manager = AuthManager()
         self.skin_manager = SkinManager()
         self._skin_photo: ImageTk.PhotoImage | None = None
+        self._skin_after_id: str | None = None
+        self._closed = False
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -27,6 +32,30 @@ class HomePage(ctk.CTkFrame):
         self._create_header()
         self._create_launch_section()
         self._create_news_section()
+
+    def destroy(self) -> None:
+        self._closed = True
+        if self._skin_after_id is not None:
+            try:
+                self.after_cancel(self._skin_after_id)
+            except Exception:
+                pass
+        super().destroy()
+
+    def _safe_after(self, ms: int, callback: Any) -> Any:
+        """Безопасный вызов after с проверкой существования виджета."""
+        if self._closed or not self.winfo_exists():
+            return None
+        return self.after(ms, callback)
+
+    def _run_safe(self, fn: Any) -> None:
+        """Безопасно выполняет функцию, если виджет ещё жив."""
+        if self._closed or not self.winfo_exists():
+            return
+        try:
+            fn()
+        except Exception as exc:
+            logger.debug("Ошибка в _run_safe: {}", exc)
 
     def _create_header(self) -> None:
         """Создаёт заголовок."""
@@ -59,23 +88,21 @@ class HomePage(ctk.CTkFrame):
             corner_radius=15,
             fg_color=("#323241", "#2d2d3c"),
             border_width=1,
-            border_color=("#505064", "#46465a")
+            border_color=("#505064", "#46465a"),
         )
         self.launch_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 20))
         self.launch_frame.grid_columnconfigure(1, weight=1)
 
-        # Заголовок секции
         section_header = ctk.CTkFrame(self.launch_frame, fg_color="transparent")
         section_header.grid(row=0, column=0, columnspan=2, padx=30, pady=(25, 15), sticky="w")
 
         section_title = ctk.CTkLabel(
             section_header,
             text="🚀 Запуск игры",
-            font=ctk.CTkFont(size=18, weight="bold")
+            font=ctk.CTkFont(size=18, weight="bold"),
         )
         section_title.pack(side="left")
 
-        # Тип авторизации
         self.auth_label = ctk.CTkLabel(
             self.launch_frame,
             text="Тип авторизации:",
@@ -94,7 +121,7 @@ class HomePage(ctk.CTkFrame):
             value="offline",
             command=self._on_auth_change,
             font=ctk.CTkFont(size=13),
-            radiobutton_width=18
+            radiobutton_width=18,
         ).pack(side="left", padx=5)
         ctk.CTkRadioButton(
             auth_btns,
@@ -103,10 +130,9 @@ class HomePage(ctk.CTkFrame):
             value="microsoft",
             command=self._on_auth_change,
             font=ctk.CTkFont(size=13),
-            radiobutton_width=18
+            radiobutton_width=18,
         ).pack(side="left", padx=15)
 
-        # MS Client ID (только для Microsoft)
         self.ms_id_label = ctk.CTkLabel(
             self.launch_frame,
             text="MS Client ID:",
@@ -120,26 +146,24 @@ class HomePage(ctk.CTkFrame):
             placeholder_text="Вставьте Client ID",
             font=ctk.CTkFont(size=13),
             height=38,
-            corner_radius=10
+            corner_radius=10,
         )
         self.ms_id_entry.grid(row=2, column=1, padx=30, pady=(15, 5), sticky="ew")
         self.ms_id_entry.grid_remove()
         if self.controller.config.ms_client_id:
             self.ms_id_entry.insert(0, self.controller.config.ms_client_id)
 
-        # Кнопка MS входа
         self.ms_login_btn = ctk.CTkButton(
             self.launch_frame,
             text="🔑 Войти через Microsoft",
             command=self._on_ms_login,
             height=42,
             font=ctk.CTkFont(size=14, weight="bold"),
-            corner_radius=10
+            corner_radius=10,
         )
         self.ms_login_btn.grid(row=3, column=0, columnspan=2, padx=30, pady=(5, 15))
         self.ms_login_btn.grid_remove()
 
-        # Имя пользователя (офлайн)
         self.username_label = ctk.CTkLabel(
             self.launch_frame,
             text="Имя пользователя:",
@@ -156,7 +180,7 @@ class HomePage(ctk.CTkFrame):
             placeholder_text="Введите имя",
             font=ctk.CTkFont(size=13),
             height=38,
-            corner_radius=10
+            corner_radius=10,
         )
         self.username_entry.grid(row=0, column=0, sticky="ew")
         if self.controller.config.last_username:
@@ -165,18 +189,13 @@ class HomePage(ctk.CTkFrame):
         self.skin_label = ctk.CTkLabel(username_row, text="", width=40)
         self.skin_label.grid(row=0, column=1, padx=(10, 0))
 
-        # Обновляем скин при изменении имени
-        self.username_entry.bind(
-            "<FocusOut>", lambda _e: self._update_skin_preview()
-        )
-        self.username_entry.bind(
-            "<Return>", lambda _e: self._update_skin_preview()
-        )
-        # Загружаем скин если имя уже есть
+        # Debounce: обновляем скин через 300мс после ввода
+        self.username_entry.bind("<KeyRelease>", lambda _e: self._schedule_skin_update())
+        self.username_entry.bind("<FocusOut>", lambda _e: self._schedule_skin_update())
+        self.username_entry.bind("<Return>", lambda _e: self._schedule_skin_update())
         if self.controller.config.last_username:
             self.after(100, self._update_skin_preview)
 
-        # Выбор версии
         self.version_label = ctk.CTkLabel(
             self.launch_frame,
             text="Версия игры:",
@@ -192,11 +211,10 @@ class HomePage(ctk.CTkFrame):
             font=ctk.CTkFont(size=13),
             dropdown_font=ctk.CTkFont(size=12),
             height=40,
-            corner_radius=10
+            corner_radius=10,
         )
         self.version_combo.grid(row=5, column=1, padx=30, pady=(15, 5), sticky="ew")
 
-        # Статус MS
         self.ms_status = ctk.CTkLabel(
             self.launch_frame,
             text="",
@@ -205,18 +223,16 @@ class HomePage(ctk.CTkFrame):
         self.ms_status.grid(row=6, column=0, columnspan=2, padx=30, pady=5)
         self.ms_status.grid_remove()
 
-        # Кнопка запуска
         self.launch_button = ctk.CTkButton(
             self.launch_frame,
             text="▶  Запустить Minecraft",
             font=ctk.CTkFont(size=18, weight="bold"),
             height=55,
             command=self._on_launch,
-            corner_radius=12
+            corner_radius=12,
         )
         self.launch_button.grid(row=7, column=0, columnspan=2, padx=30, pady=(15, 25))
 
-        # Проверяем сохранённый MS профиль
         self._check_saved_ms_profile()
 
     def _create_news_section(self) -> None:
@@ -267,8 +283,21 @@ class HomePage(ctk.CTkFrame):
         )
         self.news_content.pack(anchor="w", padx=30, pady=(0, 25))
 
+    def _schedule_skin_update(self) -> None:
+        """Откладывает обновление скина на 300 мс (debounce)."""
+        if self._skin_after_id is not None:
+            try:
+                self.after_cancel(self._skin_after_id)
+            except Exception:
+                pass
+        self._skin_after_id = self.after(300, self._update_skin_preview)
+
     def _update_skin_preview(self) -> None:
         """Обновляет превью скина по имени пользователя."""
+        self._skin_after_id = None
+        if self._closed or not self.winfo_exists():
+            return
+
         username = self.username_entry.get().strip()
         if not username:
             return
@@ -278,17 +307,27 @@ class HomePage(ctk.CTkFrame):
                 skin_img = self.skin_manager.get_skin_image(username)
                 if skin_img:
                     head = self.skin_manager.render_head(skin_img, scale=4)
-                    # Конвертируем для tkinter
                     tk_img = ImageTk.PhotoImage(head)
-                    self._skin_photo = tk_img  # Сохраняем ссылку
-                    self.after(0, lambda: self.skin_label.configure(image=tk_img))
+                    self._skin_photo = tk_img
+                    self._safe_after(
+                        0, lambda: self._run_safe(
+                            lambda: self.skin_label.configure(image=tk_img)
+                        )
+                    )
                 else:
-                    self.after(0, lambda: self.skin_label.configure(image=""))
+                    self._safe_after(
+                        0, lambda: self._run_safe(
+                            lambda: self.skin_label.configure(image="")
+                        )
+                    )
             except Exception as exc:
                 logger.debug("Не удалось загрузить скин {}: {}", username, exc)
-                self.after(0, lambda: self.skin_label.configure(image=""))
+                self._safe_after(
+                    0, lambda: self._run_safe(
+                        lambda: self.skin_label.configure(image="")
+                    )
+                )
 
-        import threading
         threading.Thread(target=load, daemon=True).start()
 
     def _on_auth_change(self) -> None:
@@ -453,25 +492,37 @@ class HomePage(ctk.CTkFrame):
                     report = analyze_latest_crash(self.mc_manager.minecraft_dir)
                     if report:
                         msg = f"💥 {report.cause}: {report.suggestion}"
-                        self.after(0, lambda m=msg: self.controller.set_status(m))
-                        self.after(0, lambda r=report: self._show_crash_dialog(r))
+                        self._safe_after(
+                            0, lambda: self._run_safe(
+                                lambda: self.controller.set_status(msg)
+                            )
+                        )
+                        self._safe_after(
+                            0, lambda: self._run_safe(
+                                lambda: self._show_crash_dialog(report)
+                            )
+                        )
                     else:
-                        self.after(
+                        self._safe_after(
                             0,
-                            lambda: self.controller.set_status(
-                                f"⚠️ Minecraft закрыт с ошибкой (код {returncode})"
+                            lambda: self._run_safe(
+                                lambda: self.controller.set_status(
+                                    f"⚠️ Minecraft закрыт с ошибкой (код {returncode})"
+                                )
                             ),
                         )
                 else:
-                    self.after(0, lambda: self.controller.set_status("👋 Minecraft закрыт"))
+                    self._safe_after(
+                        0, lambda: self._run_safe(
+                            lambda: self.controller.set_status("👋 Minecraft закрыт")
+                        )
+                    )
             except Exception as exc:
                 logger.debug("Ошибка мониторинга процесса: {}", exc)
 
-        import threading
-
         threading.Thread(target=watch, daemon=True).start()
 
-    def _show_crash_dialog(self, report) -> None:
+    def _show_crash_dialog(self, report: Any) -> None:
         """Показывает диалог с результатами анализа краша."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Анализ краша")
@@ -521,9 +572,7 @@ class HomePage(ctk.CTkFrame):
         profile = self.auth_manager.load_saved_profile()
         if profile and profile.refresh_token:
             try:
-                profile = self.auth_manager.microsoft_refresh(
-                    client_id, profile.refresh_token
-                )
+                profile = self.auth_manager.microsoft_refresh(client_id, profile.refresh_token)
             except Exception as exc:
                 logger.warning("Не удалось обновить токен: {}", exc)
                 self.controller.set_status("❌ Сессия истекла. Войдите снова.")
@@ -538,7 +587,7 @@ class HomePage(ctk.CTkFrame):
         options = {
             "username": profile.username,
             "uuid": profile.uuid,
-            "token": profile.access_token,
+            "accessToken": profile.access_token,
         }
         process = self.mc_manager.launch(
             version_id=version,
@@ -551,4 +600,5 @@ class HomePage(ctk.CTkFrame):
         )
         self.controller.set_status(f"✅ Minecraft запущен (PID: {process.pid})")
         logger.info("Minecraft запущен, PID: {}", process.pid)
-        self._monitor_process(process)
+        self.controller.discord_rpc.update_playing(version)
+        self._monitor_process(process, version)

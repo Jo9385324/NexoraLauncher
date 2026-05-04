@@ -5,7 +5,9 @@ from pathlib import Path
 import customtkinter as ctk
 from loguru import logger
 
+from quantumlauncher.core.auth import AuthManager
 from quantumlauncher.core.instance import Instance, InstanceManager
+from quantumlauncher.core.minecraft import MinecraftManager
 from quantumlauncher.core.pack_manager import export_instance, import_mrpack, import_zip
 
 
@@ -188,11 +190,100 @@ class InstancesPage(ctk.CTkFrame):
         ).pack(pady=10)
 
     def _play_instance(self, instance: Instance) -> None:
-        """Устанавливает инстанс для запуска."""
+        """Запускает инстанс Minecraft."""
+        # Спрашиваем имя пользователя если не сохранено
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Запуск {instance.name}")
+        dialog.geometry("380x220")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text=f"Запуск инстанса: {instance.name}",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(pady=(15, 5))
+
+        ctk.CTkLabel(
+            dialog,
+            text="Имя пользователя:",
+            font=ctk.CTkFont(size=13),
+        ).pack(anchor="w", padx=20, pady=(10, 5))
+
+        username_entry = ctk.CTkEntry(dialog, font=ctk.CTkFont(size=13))
+        username_entry.pack(fill="x", padx=20, pady=(0, 10))
+        username_entry.insert(0, self.controller.config.last_username or "Player")
+
+        status = ctk.CTkLabel(dialog, text="", font=ctk.CTkFont(size=12))
+        status.pack(pady=5)
+
+        def do_launch() -> None:
+            username = username_entry.get().strip()
+            if not username:
+                status.configure(text="❌ Введите имя", text_color="red")
+                return
+            dialog.destroy()
+            self._run_instance_launch(instance, username)
+
+        ctk.CTkButton(
+            dialog,
+            text="▶ Запустить",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=do_launch,
+        ).pack(pady=10)
+
+    def _run_instance_launch(self, instance: Instance, username: str) -> None:
+        """Выполняет запуск инстанса в фоне."""
+        self.controller.config.last_username = username
         self.controller.config.last_version = instance.version
         self.controller.config.save()
-        self.controller.show_page("home")
-        self.controller.set_status(f"Выбран инстанс: {instance.name}")
+        self.controller.set_status(f"🚀 Запуск {instance.name}...")
+
+        def launch() -> None:
+            try:
+                mc = MinecraftManager()
+                auth = AuthManager()
+                profile = auth.offline_login(username)
+
+                # Определяем version_id для запуска
+                version_id = instance.version
+                if instance.mod_loader == "forge" and instance.loader_version:
+                    version_id = instance.loader_version
+                elif instance.mod_loader == "fabric":
+                    # Fabric хранит ID как fabric-loader-<version>-<mc_version>
+                    version_id = instance.loader_version or instance.version
+
+                process = mc.launch(
+                    version_id=version_id,
+                    username=profile.username,
+                    java_path=instance.java_path or self.controller.config.java_path,
+                    jvm_profile=self.controller.config.jvm_profile,
+                    max_memory=instance.max_memory or self.controller.config.max_memory,
+                    min_memory=instance.min_memory or self.controller.config.min_memory,
+                )
+
+                instance.on_launch()
+                self.after(
+                    0,
+                    lambda: self.controller.set_status(
+                        f"✅ {instance.name} запущен (PID: {process.pid})"
+                    ),
+                )
+                self.after(0, lambda: self.controller.discord_rpc.update_playing(
+                    instance.version, instance.mod_loader
+                ))
+            except Exception as exc:
+                logger.error("Ошибка запуска инстанса: {}", exc)
+                self.after(
+                    0,
+                    lambda err=str(exc): self.controller.set_status(
+                        f"❌ Ошибка запуска: {err}"
+                    ),
+                )
+
+        import threading
+
+        threading.Thread(target=launch, daemon=True).start()
 
     def _delete_instance(self, name: str) -> None:
         """Удаляет инстанс после подтверждения."""

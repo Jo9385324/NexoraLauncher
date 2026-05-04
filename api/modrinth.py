@@ -1,13 +1,18 @@
 """Клиент API Modrinth для поиска и скачивания модов."""
 
-from dataclasses import dataclass
+import json
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from loguru import logger
 
+from quantumlauncher.utils.paths import get_cache_dir
+
 MODRINTH_API_URL = "https://api.modrinth.com/v2"
+_CACHE_TTL_SECONDS = 300  # 5 минут
 
 
 @dataclass
@@ -24,6 +29,13 @@ class ModrinthProject:
     game_versions: list[str]
     loaders: list[str]
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ModrinthProject":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
 
 @dataclass
 class ModrinthVersion:
@@ -36,6 +48,58 @@ class ModrinthVersion:
     loaders: list[str]
     files: list[dict[str, Any]]
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ModrinthVersion":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+class _Cache:
+    """Простой файловый + in-memory кэш для Modrinth."""
+
+    def __init__(self) -> None:
+        self._dir = get_cache_dir() / "modrinth"
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._mem: dict[str, tuple[Any, float]] = {}
+
+    def _key(self, *parts: str) -> str:
+        return "_".join(parts).replace(" ", "_")[:120]
+
+    def _path(self, key: str) -> Path:
+        return self._dir / f"{key}.json"
+
+    def get(self, key: str) -> Any | None:
+        now = time.time()
+        if key in self._mem:
+            value, ts = self._mem[key]
+            if now - ts < _CACHE_TTL_SECONDS:
+                return value
+            del self._mem[key]
+
+        path = self._path(key)
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if now - data.get("_ts", 0) < _CACHE_TTL_SECONDS:
+                    self._mem[key] = (data["value"], data["_ts"])
+                    return data["value"]
+            except Exception:
+                pass
+        return None
+
+    def set(self, key: str, value: Any) -> None:
+        now = time.time()
+        self._mem[key] = (value, now)
+        try:
+            self._path(key).write_text(
+                json.dumps({"_ts": now, "value": value}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.debug("Ошибка записи кэша Modrinth: {}", exc)
+
 
 class ModrinthClient:
     """Асинхронный клиент Modrinth API."""
@@ -43,6 +107,7 @@ class ModrinthClient:
     def __init__(self, base_url: str = MODRINTH_API_URL) -> None:
         self.base_url = base_url
         self._session: aiohttp.ClientSession | None = None
+        self._cache = _Cache()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Возвращает или создаёт сессию."""
@@ -62,11 +127,17 @@ class ModrinthClient:
     async def search(
         self,
         query: str,
-        facets: list[str] | None = None,
+        facets: list[list[str]] | None = None,
         limit: int = 10,
         offset: int = 0,
     ) -> list[ModrinthProject]:
-        """Ищет моды по запросу."""
+        """Ищет моды по запросу (с кэшированием)."""
+        cache_key = self._cache._key("search", query, str(facets), str(limit), str(offset))
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Modrinth search '{}' из кэша", query)
+            return [ModrinthProject.from_dict(h) for h in cached]
+
         session = await self._get_session()
         params: dict[str, Any] = {
             "query": query,
@@ -74,7 +145,7 @@ class ModrinthClient:
             "offset": offset,
         }
         if facets:
-            params["facets"] = str(facets)
+            params["facets"] = json.dumps(facets)
 
         async with session.get(f"{self.base_url}/search", params=params) as resp:
             resp.raise_for_status()
@@ -83,12 +154,52 @@ class ModrinthClient:
         hits = data.get("hits", [])
         logger.debug("Modrinth search '{}' returned {} results", query, len(hits))
 
-        return [
+        result = [
             ModrinthProject(
                 project_id=h["project_id"],
                 slug=h["slug"],
                 title=h["title"],
                 description=h["description"],
+                categories=h.get("categories", []),
+                downloads=h.get("downloads", 0),
+                icon_url=h.get("icon_url"),
+                game_versions=h.get("versions", []),
+                loaders=h.get("display_categories", []),
+            )
+            for h in hits
+        ]
+        self._cache.set(cache_key, [r.to_dict() for r in result])
+        return result
+
+    async def get_featured_projects(
+        self,
+        project_type: str | None = None,
+        limit: int = 12,
+    ) -> list[ModrinthProject]:
+        """Возвращает популярные/рекомендуемые проекты."""
+        facets: list[list[str]] = []
+        if project_type:
+            facets.append([f"project_type:{project_type}"])
+
+        params: dict[str, Any] = {
+            "limit": limit,
+            "index": "featured",
+        }
+        if facets:
+            params["facets"] = json.dumps(facets)
+
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/search", params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+
+        hits = data.get("hits", [])
+        return [
+            ModrinthProject(
+                project_id=h["project_id"],
+                slug=h["slug"],
+                title=h["title"],
+                description=h.get("description", ""),
                 categories=h.get("categories", []),
                 downloads=h.get("downloads", 0),
                 icon_url=h.get("icon_url"),
@@ -104,7 +215,13 @@ class ModrinthClient:
         game_version: str | None = None,
         loader: str | None = None,
     ) -> list[ModrinthVersion]:
-        """Возвращает версии проекта."""
+        """Возвращает версии проекта (с кэшированием)."""
+        cache_key = self._cache._key("versions", project_id, str(game_version), str(loader))
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Modrinth versions '{}' из кэша", project_id)
+            return [ModrinthVersion.from_dict(v) for v in cached]
+
         session = await self._get_session()
         params: dict[str, Any] = {}
         if game_version:
@@ -118,7 +235,7 @@ class ModrinthClient:
             resp.raise_for_status()
             data = await resp.json()
 
-        return [
+        result = [
             ModrinthVersion(
                 version_id=v["id"],
                 project_id=v["project_id"],
@@ -129,6 +246,8 @@ class ModrinthClient:
             )
             for v in data
         ]
+        self._cache.set(cache_key, [r.to_dict() for r in result])
+        return result
 
     async def get_best_version(
         self,

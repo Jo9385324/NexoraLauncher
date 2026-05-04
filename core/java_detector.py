@@ -171,6 +171,18 @@ def _common_paths() -> list[Path]:
     return found
 
 
+def _version_key(info: JavaInfo) -> tuple[int, ...]:
+    """Ключ сортировки Java по версии (старшие первыми)."""
+    parts = re.split(r"[._]", info.version)
+    nums: list[int] = []
+    for p in parts:
+        try:
+            nums.append(int(p))
+        except ValueError:
+            break
+    return tuple(nums) if nums else (0,)
+
+
 def find_all_java() -> list[JavaInfo]:
     """Находит все установленные Java на системе."""
     raw_paths: list[Path] = []
@@ -204,36 +216,13 @@ def find_all_java() -> list[JavaInfo]:
             results.append(info)
             logger.debug("Найдена Java {} в {}", info.version, info.path)
 
-    # сортируем по версии (старшие первыми)
-    def _version_key(info: JavaInfo) -> tuple[int, ...]:
-        parts = re.split(r"[._]", info.version)
-        nums: list[int] = []
-        for p in parts:
-            try:
-                nums.append(int(p))
-            except ValueError:
-                break
-        return tuple(nums) if nums else (0,)
-
     results.sort(key=_version_key, reverse=True)
     return results
 
 
 def find_best_java(min_version: int = 17) -> JavaInfo | None:
     """Находит лучшую подходящую Java (по умолчанию >= 17 для современных MC)."""
-    all_java = find_all_java()
-
-    def _version_key(info: JavaInfo) -> tuple[int, ...]:
-        parts = re.split(r"[._]", info.version)
-        nums: list[int] = []
-        for p in parts:
-            try:
-                nums.append(int(p))
-            except ValueError:
-                break
-        return tuple(nums) if nums else (0,)
-
-    all_java.sort(key=_version_key, reverse=True)
+    all_java = find_all_java()  # уже отсортирована по убыванию версии
 
     for info in all_java:
         try:

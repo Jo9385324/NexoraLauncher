@@ -9,7 +9,9 @@ from loguru import logger
 class DiscordRPC:
     """Управляет Discord Rich Presence статусом."""
 
-    CLIENT_ID = "1234567890123456789"  # placeholder — нужен реальный ID приложения
+    # Замените на реальный Client ID из Discord Developer Portal
+    # или оставьте пустым для отключения интеграции
+    CLIENT_ID: str | None = None
 
     def __init__(self) -> None:
         self._rpc: Any | None = None
@@ -17,6 +19,9 @@ class DiscordRPC:
 
     def connect(self) -> bool:
         """Подключается к Discord. Возвращает True если успешно."""
+        if not self.CLIENT_ID:
+            logger.debug("Discord RPC отключён: CLIENT_ID не задан")
+            return False
         if self._connected:
             return True
         try:

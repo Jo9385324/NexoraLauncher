@@ -5,6 +5,7 @@ from loguru import logger
 
 from quantumlauncher.core.java_detector import find_all_java
 from quantumlauncher.core.jvm_flags import JvmProfile, get_profile_description
+from quantumlauncher.utils.i18n import t
 
 
 class SettingsPage(ctk.CTkFrame):
@@ -27,7 +28,7 @@ class SettingsPage(ctk.CTkFrame):
 
         self.title_label = ctk.CTkLabel(
             self.header,
-            text="Настройки",
+            text=t("settings.title"),
             font=ctk.CTkFont(size=24, weight="bold"),
         )
         self.title_label.pack(anchor="w")
@@ -45,7 +46,7 @@ class SettingsPage(ctk.CTkFrame):
         # Максимальная память
         self._create_setting_row(
             self.form_frame,
-            "Макс. память (МБ):",
+            t("settings.memory") + " (max):",
             ctk.CTkEntry,
             value=str(config.max_memory),
             attr="max_memory",
@@ -54,7 +55,7 @@ class SettingsPage(ctk.CTkFrame):
         # Минимальная память
         self._create_setting_row(
             self.form_frame,
-            "Мин. память (МБ):",
+            t("settings.memory") + " (min):",
             ctk.CTkEntry,
             value=str(config.min_memory),
             attr="min_memory",
@@ -63,7 +64,7 @@ class SettingsPage(ctk.CTkFrame):
         # Тема
         self._create_combo_row(
             self.form_frame,
-            "Тема оформления:",
+            t("settings.appearance") + ":",
             values=["dark", "light", "system"],
             current=config.appearance_mode,
             attr="appearance_mode",
@@ -72,7 +73,7 @@ class SettingsPage(ctk.CTkFrame):
         # Цветовая схема
         self._create_combo_row(
             self.form_frame,
-            "Цветовая схема:",
+            t("settings.appearance") + " (color):",
             values=["blue", "green", "dark-blue"],
             current=config.color_theme,
             attr="color_theme",
@@ -86,7 +87,7 @@ class SettingsPage(ctk.CTkFrame):
 
         self._create_combo_row(
             self.form_frame,
-            "Профиль JVM:",
+            t("settings.jvm_profile") + ":",
             values=jvm_display,
             current=self._jvm_profile_reverse.get(config.jvm_profile, jvm_display[0]),
             attr="jvm_profile_display",
@@ -95,7 +96,7 @@ class SettingsPage(ctk.CTkFrame):
         # Кнопка сохранения
         self.save_btn = ctk.CTkButton(
             self.form_frame,
-            text="💾 Сохранить настройки",
+            text=t("settings.save"),
             font=ctk.CTkFont(size=14, weight="bold"),
             height=40,
             command=self._save_settings,
@@ -154,7 +155,9 @@ class SettingsPage(ctk.CTkFrame):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=5, padx=10)
 
-        lbl = ctk.CTkLabel(row, text="Путь к Java:", font=ctk.CTkFont(size=13), width=150)
+        lbl = ctk.CTkLabel(
+            row, text=t("settings.java_path") + ":", font=ctk.CTkFont(size=13), width=150
+        )
         lbl.pack(side="left")
 
         self._java_path_widget = ctk.CTkEntry(row, font=ctk.CTkFont(size=13))
@@ -163,7 +166,7 @@ class SettingsPage(ctk.CTkFrame):
 
         self._java_detect_btn = ctk.CTkButton(
             row,
-            text="🔍 Авто",
+            text=t("settings.java_auto"),
             width=80,
             command=self._on_detect_java,
         )
@@ -181,7 +184,7 @@ class SettingsPage(ctk.CTkFrame):
 
     def _on_detect_java(self) -> None:
         """Запускает автоопределение Java."""
-        self.controller.set_status("🔍 Поиск установленных Java...")
+        self.controller.set_status(t("settings.java_auto") + " ...")
         self._java_detect_btn.configure(state="disabled")
 
         def detect() -> None:
@@ -202,7 +205,7 @@ class SettingsPage(ctk.CTkFrame):
     def _show_java_results(self, java_list: list) -> None:
         """Показывает найденные Java в выпадающем списке."""
         if not java_list:
-            self.controller.set_status("❌ Java не найдена")
+            self.controller.set_status(t("settings.java_not_found"))
             return
 
         self._java_options = {}
@@ -220,7 +223,7 @@ class SettingsPage(ctk.CTkFrame):
         self._java_path_widget.delete(0, "end")
         self._java_path_widget.insert(0, self._java_options[display_values[0]])
 
-        self.controller.set_status(f"✅ Найдено {len(java_list)} Java")
+        self.controller.set_status(t("settings.java_found", count=len(java_list)))
 
     def _on_java_selected(self, choice: str) -> None:
         """Обработчик выбора Java из списка."""
@@ -250,10 +253,10 @@ class SettingsPage(ctk.CTkFrame):
             ctk.set_appearance_mode(config.appearance_mode)
             ctk.set_default_color_theme(config.color_theme)
 
-            self.controller.set_status("✅ Настройки сохранены")
+            self.controller.set_status(t("settings.saved"))
             logger.info("Настройки сохранены")
         except Exception as e:
-            self.controller.set_status(f"❌ Ошибка сохранения: {e}")
+            self.controller.set_status(t("settings.save_error", error=e))
             logger.error("Ошибка сохранения настроек: {}", e)
 
     def _get_widget_value(self, attr: str) -> str:
